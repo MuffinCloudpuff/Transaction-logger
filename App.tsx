@@ -26,6 +26,9 @@ const App: React.FC = () => {
   // Delete Confirmation State
   const [deleteConfirm, setDeleteConfirm] = useState<{ id: string, type: 'SPLIT' | 'DELETE', title: string } | null>(null);
 
+  // Clear All Confirmation State
+  const [clearAllConfirm, setClearAllConfirm] = useState(false);
+
   // Import Modal State
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [importText, setImportText] = useState('');
@@ -332,6 +335,11 @@ const App: React.FC = () => {
     setDeleteConfirm(null);
   };
 
+  const handleClearAllData = () => {
+      setTransactions([]);
+      setClearAllConfirm(false);
+  };
+
   const handleEdit = (transaction: Transaction) => {
     setEditingTransaction(transaction);
     setIsModalOpen(true);
@@ -625,6 +633,19 @@ const App: React.FC = () => {
                onUpdate={handleQuickUpdate}
                onDelete={handleDeleteRequest} 
              />
+
+             {/* Clear All Button - Only visible in ALL filter and if data exists */}
+             {filter === FilterType.ALL && transactions.length > 0 && (
+                <div className="mt-8 mb-4 flex justify-center">
+                    <button 
+                        onClick={() => setClearAllConfirm(true)}
+                        className="flex items-center gap-2 text-red-500 hover:text-red-700 hover:bg-red-50 px-4 py-2 rounded-lg transition-colors text-sm font-medium border border-transparent hover:border-red-100"
+                    >
+                        <Trash2 size={16} />
+                        一键清空所有数据
+                    </button>
+                </div>
+             )}
           </>
         )}
 
@@ -687,6 +708,38 @@ const App: React.FC = () => {
                     取消
                  </button>
               </div>
+           </div>
+        </div>
+      )}
+
+      {/* CLEAR ALL CONFIRMATION MODAL */}
+      {clearAllConfirm && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm p-4 animate-fade-in">
+           <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6 transform transition-all scale-100">
+               <div className="flex flex-col items-center text-center">
+                  <div className="bg-red-100 text-red-600 p-3 rounded-full mb-4">
+                     <AlertTriangle size={32} />
+                  </div>
+                  <h3 className="text-lg font-bold text-gray-900 mb-2">危险操作：清空所有数据</h3>
+                  <p className="text-sm text-gray-500 mb-6 leading-relaxed">
+                     您确定要<span className="text-red-600 font-bold">永久删除</span>所有记账记录吗？<br/>
+                     此操作无法撤销，所有数据将丢失。
+                  </p>
+                  <div className="flex gap-3 w-full">
+                     <button 
+                        onClick={() => setClearAllConfirm(false)}
+                        className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 font-medium hover:bg-gray-50 transition-colors"
+                     >
+                        取消
+                     </button>
+                     <button 
+                        onClick={handleClearAllData}
+                        className="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 shadow-lg shadow-red-200 transition-colors"
+                     >
+                        确认清空
+                     </button>
+                  </div>
+               </div>
            </div>
         </div>
       )}
