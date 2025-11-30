@@ -1,16 +1,17 @@
 
 import React, { useState, useMemo } from 'react';
 import { Transaction } from '../types';
-import { ArrowRight, Link as LinkIcon, Sparkles, Loader2, UploadCloud, Search, AlertCircle, Tag } from 'lucide-react';
+import { ArrowRight, Link as LinkIcon, Sparkles, Loader2, UploadCloud, Search, AlertCircle, Tag, Wand2 } from 'lucide-react';
 
 interface MatchViewProps {
   transactions: Transaction[];
   onMerge: (buyId: string, sellId: string) => void;
   onUpload: (files: File[], type: 'BUY' | 'SELL') => void;
+  onAutoTag: () => void;
   isProcessing: boolean;
 }
 
-// --- Category Logic ---
+// --- Category Logic (Legacy Keyword Matching Fallback) ---
 const CATEGORY_RULES = [
   { id: 'keyboard', icon: '⌨️', label: '键盘/轴', keywords: ['键盘', '套件', '轴', '键帽', '客制化', 'keyboard', 'keycap', 'switch', 'ttc', 'vgn', 'gasket', 'pcb', '卫星轴', '试轴器'] },
   { id: 'mouse', icon: '🖱️', label: '鼠标', keywords: ['鼠标', 'mouse', 'gpw', '毒蝰', '雷蛇', '罗技', '卓威', '垫'] },
@@ -31,7 +32,50 @@ const detectCategory = (name: string) => {
   return null;
 };
 
-export const MatchView: React.FC<MatchViewProps> = ({ transactions, onMerge, onUpload, isProcessing }) => {
+// Color map for AI tags (Using Chinese Keys from new Standard)
+const TAG_COLORS: Record<string, string> = {
+  // 1. 数码与家电
+  '主机设备': 'bg-blue-100 text-blue-800',
+  '外设配件': 'bg-indigo-100 text-indigo-800',
+  '影音摄影': 'bg-purple-100 text-purple-800',
+  '生活家电': 'bg-cyan-100 text-cyan-800',
+  
+  // 2. 家具与家装
+  '大型家具': 'bg-amber-100 text-amber-800',
+  '办公家具': 'bg-orange-100 text-orange-800',
+  '家纺布艺': 'bg-yellow-100 text-yellow-800',
+  '照明灯饰': 'bg-lime-100 text-lime-800',
+
+  // 3. 服饰与穿搭
+  '服饰': 'bg-rose-100 text-rose-800',
+  '鞋靴箱包': 'bg-pink-100 text-pink-800',
+  '配饰': 'bg-fuchsia-100 text-fuchsia-800',
+
+  // 4. 厨房
+  '厨房用具': 'bg-emerald-100 text-emerald-800',
+  '厨房小电': 'bg-teal-100 text-teal-800',
+  '食品': 'bg-green-100 text-green-800',
+
+  // 5. 卫浴
+  '个人护理': 'bg-sky-100 text-sky-800',
+  '清洁用品': 'bg-blue-50 text-blue-600',
+
+  // 6. 文具
+  '书籍': 'bg-stone-100 text-stone-800',
+  '办公文具': 'bg-neutral-100 text-neutral-800',
+
+  // 7-10 Others
+  '重要资产': 'bg-red-100 text-red-800',
+  '运动器材': 'bg-violet-100 text-violet-800',
+  '户外装备': 'bg-green-200 text-green-900',
+  '收藏玩乐': 'bg-indigo-200 text-indigo-900',
+  '医药急救': 'bg-red-50 text-red-600',
+  '虚拟/卡券': 'bg-gray-100 text-gray-800 border border-gray-200',
+  
+  default: 'bg-gray-100 text-gray-600'
+};
+
+export const MatchView: React.FC<MatchViewProps> = ({ transactions, onMerge, onUpload, onAutoTag, isProcessing }) => {
   
   const [selectedBuyId, setSelectedBuyId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -51,26 +95,33 @@ export const MatchView: React.FC<MatchViewProps> = ({ transactions, onMerge, onU
     const s1 = buyItem.name.toLowerCase();
     const s2 = sellItem.name.toLowerCase();
 
-    // A. Category Matching (High Weight)
+    // A. AI Smart Type Matching (Highest Priority)
+    if (buyItem.smartType && sellItem.smartType) {
+        if (buyItem.smartType === sellItem.smartType) {
+            score += 80; // Massive bonus for same AI tag (e.g. CPU vs CPU)
+        } else {
+            score -= 50; // Penalty for mismatch (e.g. CPU vs RAM)
+        }
+    }
+
+    // B. Legacy Category Matching
     const cat1 = detectCategory(s1);
     const cat2 = detectCategory(s2);
 
     if (cat1 && cat2) {
       if (cat1.id === cat2.id) {
-        score += 50; // Huge bonus for same category
+        score += 40; 
       } else {
-        score -= 50; // Penalty for different identified categories
+        score -= 20; 
       }
     }
 
-    // B. Direct Inclusion (Very Strong)
+    // C. Direct Inclusion
     if (s1.includes(s2) || s2.includes(s1)) {
         score += 30;
     }
 
-    // C. Character/Keyword Overlap (Jaccard-ish)
-    // Extract meaningful alphanumeric tokens and Chinese characters
-    // Regex matches: English words OR individual Chinese characters
+    // D. Character/Keyword Overlap (Jaccard-ish)
     const getTokens = (str: string) => {
        const match = str.match(/[a-z0-9]+|[\u4e00-\u9fa5]/g);
        return new Set(match || []);
@@ -84,9 +135,6 @@ export const MatchView: React.FC<MatchViewProps> = ({ transactions, onMerge, onU
         if (tokens2.has(t)) intersection++;
     });
 
-    // Weighted overlap score
-    // If they share "轴" (1 char), it's worth points.
-    // If they share "iphone" (1 word), it's worth points.
     score += (intersection * 10);
 
     return score;
@@ -142,7 +190,24 @@ export const MatchView: React.FC<MatchViewProps> = ({ transactions, onMerge, onU
               </p>
           </div>
           
-          <div className="flex items-center gap-4 w-full md:w-auto">
+          <div className="flex items-center gap-3 w-full md:w-auto">
+             {/* AI Auto Tag Button */}
+             <button
+               onClick={onAutoTag}
+               disabled={isProcessing}
+               className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-bold transition-all border
+                 ${isProcessing 
+                   ? 'bg-gray-100 text-gray-400 border-gray-200' 
+                   : 'bg-purple-50 text-purple-700 border-purple-200 hover:bg-purple-100 hover:border-purple-300 shadow-sm'
+                 }`}
+               title="使用 AI 自动识别硬件型号、虚拟物品等，提高匹配准确率"
+             >
+               {isProcessing ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
+               AI 智能自动打标
+             </button>
+
+             <div className="w-px h-6 bg-gray-200 hidden md:block"></div>
+
             <div className="relative flex-1 md:flex-none">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
               <input 
@@ -176,6 +241,7 @@ export const MatchView: React.FC<MatchViewProps> = ({ transactions, onMerge, onU
             <div className="flex-1 overflow-y-auto p-3 space-y-2 custom-scrollbar">
               {filteredBuys.map(item => {
                 const cat = detectCategory(item.name);
+                const aiTag = item.smartType;
                 return (
                   <div 
                     key={item.id}
@@ -188,13 +254,18 @@ export const MatchView: React.FC<MatchViewProps> = ({ transactions, onMerge, onU
                     <div className="flex justify-between items-start mb-1">
                       <div className="flex-1">
                           <div className="font-medium text-gray-800 text-sm line-clamp-2">{item.name}</div>
-                          {cat && (
-                              <div className="flex items-center gap-1 mt-1">
-                                  <span className="text-[10px] bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded border border-indigo-100 flex items-center gap-1">
+                          <div className="flex flex-wrap items-center gap-1 mt-1">
+                             {aiTag && (
+                               <span className={`text-[10px] px-1.5 py-0.5 rounded border border-transparent font-medium uppercase tracking-wide flex items-center gap-1 ${TAG_COLORS[aiTag] || TAG_COLORS.default}`}>
+                                  <Sparkles size={8} /> {aiTag}
+                               </span>
+                             )}
+                             {!aiTag && cat && (
+                                  <span className="text-[10px] bg-gray-50 text-gray-500 px-1.5 py-0.5 rounded border border-gray-200 flex items-center gap-1">
                                       {cat.icon} {cat.label}
                                   </span>
-                              </div>
-                          )}
+                             )}
+                          </div>
                       </div>
                       <span className="font-mono font-semibold text-gray-900 ml-2 text-sm whitespace-nowrap">
                         ¥{item.buyPrice}
@@ -236,13 +307,15 @@ export const MatchView: React.FC<MatchViewProps> = ({ transactions, onMerge, onU
               {filteredSells.map((item, index) => {
                 const isTopRecommendation = selectedBuyId && index === 0 && searchQuery === '';
                 const cat = detectCategory(item.name);
+                const aiTag = item.smartType;
                 
                 // Show match reason if top recommendation
                 let matchReason = '';
                 if (isTopRecommendation && selectedBuyId) {
                     const selectedItem = buyList.find(b => b.id === selectedBuyId);
                     const score = selectedItem ? calculateScore(selectedItem, item) : 0;
-                    if (score > 40) matchReason = "类型一致 & 关键词匹配";
+                    if (score > 70) matchReason = "AI 智能匹配 🔥";
+                    else if (score > 40) matchReason = "类型一致 & 关键词匹配";
                     else if (score > 10) matchReason = "关键词相似";
                 }
 
@@ -278,13 +351,18 @@ export const MatchView: React.FC<MatchViewProps> = ({ transactions, onMerge, onU
                     <div className="flex justify-between items-start mb-1">
                       <div className="flex-1">
                         <div className="font-medium text-gray-800 text-sm line-clamp-2">{item.name}</div>
-                        {cat && (
-                            <div className="flex items-center gap-1 mt-1">
-                                <span className="text-[10px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded border border-gray-200 flex items-center gap-1">
-                                    {cat.icon} {cat.label}
-                                </span>
-                            </div>
-                        )}
+                        <div className="flex flex-wrap items-center gap-1 mt-1">
+                             {aiTag && (
+                               <span className={`text-[10px] px-1.5 py-0.5 rounded border border-transparent font-medium uppercase tracking-wide flex items-center gap-1 ${TAG_COLORS[aiTag] || TAG_COLORS.default}`}>
+                                  <Sparkles size={8} /> {aiTag}
+                               </span>
+                             )}
+                             {!aiTag && cat && (
+                                  <span className="text-[10px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded border border-gray-200 flex items-center gap-1">
+                                      {cat.icon} {cat.label}
+                                  </span>
+                             )}
+                          </div>
                       </div>
                       <span className="font-mono font-semibold text-green-600 ml-2 text-sm whitespace-nowrap">
                         +¥{item.sellPrice}

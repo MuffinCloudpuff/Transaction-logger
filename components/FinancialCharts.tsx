@@ -78,9 +78,9 @@ export const FinancialCharts: React.FC<FinancialChartsProps> = ({ transactions }
     const monthlyData = Array.from(monthMap.values()).sort((a, b) => a.name.localeCompare(b.name));
 
     // 4. Category Data (Pie Charts)
-    const categoryStats = sorted.reduce((acc, t) => {
-      const existing = acc.find(c => c.name === t.category);
-      
+    
+    // A. Profit Distribution (Where does the money come from?)
+    const profitStats = sorted.reduce((acc, t) => {
       let netProfit = 0;
       if (t.isSold && t.buyPrice > 0) {
           const shipping = t.shippingCost || 0;
@@ -88,26 +88,27 @@ export const FinancialCharts: React.FC<FinancialChartsProps> = ({ transactions }
           netProfit = t.sellPrice - t.buyPrice - shipping - fee;
       }
       
-      if (existing) {
-        existing.totalCost += t.buyPrice; // Total capital allocated
-        existing.realizedProfit += netProfit;
-      } else {
-        acc.push({ 
-          name: t.category, 
-          totalCost: t.buyPrice, 
-          realizedProfit: netProfit
-        });
+      if (netProfit > 0) {
+        const existing = acc.find(c => c.name === t.category);
+        if (existing) existing.value += netProfit;
+        else acc.push({ name: t.category, value: netProfit });
       }
       return acc;
-    }, [] as { name: string; totalCost: number; realizedProfit: number }[]);
+    }, [] as { name: string; value: number }[]);
 
-    // Filter out negative profits for Pie Chart visualization (or handle separately)
-    const profitDistribution = categoryStats
-        .filter(c => c.realizedProfit > 0)
-        .map(c => ({ name: c.name, value: c.realizedProfit }));
+    // B. Inventory Value Distribution (Where is the money stuck?)
+    // Filter: Not Sold AND Buy Price > 5 (Ignore cheap consumables)
+    const inventoryStats = sorted
+        .filter(t => !t.isSold && t.buyPrice > 5) 
+        .reduce((acc, t) => {
+            const existing = acc.find(c => c.name === t.category);
+            if (existing) existing.value += t.buyPrice;
+            else acc.push({ name: t.category, value: t.buyPrice });
+            return acc;
+        }, [] as { name: string; value: number }[]);
 
-    const costDistribution = categoryStats
-        .map(c => ({ name: c.name, value: c.totalCost }));
+    const profitDistribution = profitStats;
+    const inventoryDistribution = inventoryStats;
 
     // 5. KPI Metrics (Closed Loop Only)
     // Filter strictly for Closed Loop items for accurate "Trade Profit" stats
@@ -134,7 +135,7 @@ export const FinancialCharts: React.FC<FinancialChartsProps> = ({ transactions }
       timelineData,
       monthlyData,
       profitDistribution,
-      costDistribution,
+      inventoryDistribution,
       kpi: {
         avgProfit,
         profitMargin,
@@ -177,7 +178,6 @@ export const FinancialCharts: React.FC<FinancialChartsProps> = ({ transactions }
               <Percent size={18} />
             </div>
          </div>
-         {/* Add more KPIs if needed */}
       </div>
 
       {/* Chart 1: Capital Trend (Line) */}
@@ -276,35 +276,44 @@ export const FinancialCharts: React.FC<FinancialChartsProps> = ({ transactions }
       {/* Chart 3 & 4: Distributions */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         
-        {/* Cost Distribution (Inventory & Sold Cost) */}
+        {/* Inventory Value Distribution */}
         <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex flex-col">
-          <h3 className="text-gray-800 font-bold text-lg mb-4">资金占用分布 (成本)</h3>
+          <h3 className="text-gray-800 font-bold text-lg mb-1">库存价值分布</h3>
+          <p className="text-xs text-gray-400 mb-4">仅统计单价 &gt; ¥5 的有效库存</p>
           <div className="flex-1 min-h-[250px] relative">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie
-                  data={data.costDistribution}
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={60}
-                  outerRadius={80}
-                  paddingAngle={2}
-                  dataKey="value"
-                  stroke="none"
-                >
-                  {data.costDistribution.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip />
-                <Legend layout="horizontal" verticalAlign="bottom" align="center" iconType="circle"/>
-              </PieChart>
-            </ResponsiveContainer>
+            {data.inventoryDistribution.length > 0 ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={data.inventoryDistribution}
+                      cx="50%"
+                      cy="50%"
+                      innerRadius={60}
+                      outerRadius={80}
+                      paddingAngle={2}
+                      dataKey="value"
+                      stroke="none"
+                    >
+                      {data.inventoryDistribution.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip formatter={(value: number) => `¥${value.toLocaleString()}`} />
+                    <Legend layout="horizontal" verticalAlign="bottom" align="center" iconType="circle"/>
+                  </PieChart>
+                </ResponsiveContainer>
+            ) : (
+                <div className="h-full flex items-center justify-center text-gray-400 text-sm">
+                  暂无高价值库存
+                </div>
+            )}
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-               <div className="text-center">
-                 <p className="text-xs text-gray-400">总投入</p>
-                 <p className="text-lg font-bold text-gray-700">¥{(data.costDistribution.reduce((a,b)=>a+b.value,0)/1000).toFixed(1)}k</p>
-               </div>
+               {data.inventoryDistribution.length > 0 && (
+                   <div className="text-center">
+                     <p className="text-xs text-gray-400">总库存值</p>
+                     <p className="text-lg font-bold text-gray-700">¥{(data.inventoryDistribution.reduce((a,b)=>a+b.value,0)/1000).toFixed(1)}k</p>
+                   </div>
+               )}
             </div>
           </div>
         </div>
@@ -330,7 +339,7 @@ export const FinancialCharts: React.FC<FinancialChartsProps> = ({ transactions }
                         <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                       ))}
                     </Pie>
-                    <Tooltip />
+                    <Tooltip formatter={(value: number) => `¥${value.toFixed(2)}`} />
                   </PieChart>
                 </ResponsiveContainer>
              ) : (

@@ -11,6 +11,7 @@ export interface Transaction {
   notes?: string;
   shippingCost?: number; // Cost paid by seller
   shippingMethod?: string; // e.g. 'STO', 'SF', 'JD'
+  smartType?: string; // AI-assigned specific tag (e.g. 'cpu', 'keyboard', 'virtual')
 }
 
 export interface TradeStats {

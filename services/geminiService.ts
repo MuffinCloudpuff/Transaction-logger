@@ -1,3 +1,4 @@
+
 import { GoogleGenAI, Type } from "@google/genai";
 import { Transaction, TradeStats, ImportItem, MatchedPair } from '../types';
 
@@ -96,11 +97,6 @@ const sliceLongImage = async (file: File): Promise<string[]> => {
                    break;
                  }
               }
-              
-              // If no clean cut found, we just cut at max height. 
-              // We might split an item, but the "smart search" usually works for lists.
-              // To be safer, we could add overlap, but strict cutting is requested to avoid dupes.
-              // Let's rely on the large search window (600px) which is usually enough for any product card.
             }
 
             // Extract chunk
@@ -145,14 +141,12 @@ const sliceLongImage = async (file: File): Promise<string[]> => {
 export const analyzeTradeScreenshots = async (files: File[], type: 'BUY' | 'SELL'): Promise<ImportItem[]> => {
   try {
     // 1. Process all files into chunks (base64 strings)
-    // Flatten result: [File1_Chunk1, File1_Chunk2, File2_Chunk1 ...]
     const allChunksNested = await Promise.all(files.map(sliceLongImage));
     const allChunks = allChunksNested.flat();
 
     if (allChunks.length === 0) return [];
 
-    // 2. Process chunks in batches to respect API limits and keep context manageable
-    // Sending 3-4 image chunks per request is usually safe for Gemini 2.5 Flash
+    // 2. Process chunks in batches
     const BATCH_SIZE = 3; 
     const batches = [];
     for (let i = 0; i < allChunks.length; i += BATCH_SIZE) {
@@ -161,7 +155,6 @@ export const analyzeTradeScreenshots = async (files: File[], type: 'BUY' | 'SELL
 
     const allExtractedItems: any[] = [];
 
-    // Process batches sequentially (or parallel if low count, but sequential is safer for rate limits)
     for (const batchImages of batches) {
       
       const imageParts = batchImages.map(data => ({
@@ -185,8 +178,7 @@ export const analyzeTradeScreenshots = async (files: File[], type: 'BUY' | 'SELL
         
         Context: This is a ${type} list.
         
-        Return JSON Array:
-        [{ "name": "...", "price": 100.00, "date": "2023-10-01" }]
+        Return JSON Array.
       `;
 
       const response = await ai.models.generateContent({
@@ -205,165 +197,131 @@ export const analyzeTradeScreenshots = async (files: File[], type: 'BUY' | 'SELL
                 price: { type: Type.NUMBER },
                 date: { type: Type.STRING },
               },
-              required: ["name", "price"],
-            },
+              required: ["name", "price", "date"]
+            }
           },
         },
       });
 
-      const text = response.text;
-      if (text) {
+      if (response.text) {
         try {
-          const items = JSON.parse(text);
-          if (Array.isArray(items)) {
-            allExtractedItems.push(...items);
-          }
+          const items = JSON.parse(response.text);
+          allExtractedItems.push(...items);
         } catch (e) {
-          console.warn("Failed to parse batch response", e);
+          console.error("Failed to parse batch response", response.text);
         }
       }
     }
-    
-    // 3. Deduplicate and Map
-    // Since we cut cleanly, duplicates *should* be rare, but if a slice cut through a header 
-    // and the AI hallucinated the rest in both chunks, we might get partial dupes.
-    // Simple dedupe by Name + Price + Date
-    const uniqueItems = new Map();
-    
+
+    // Deduplicate logic
+    const uniqueMap = new Map();
     allExtractedItems.forEach(item => {
-      // Create a unique key
-      const key = `${item.name}-${item.price}-${item.date}`;
-      if (!uniqueItems.has(key)) {
-        uniqueItems.set(key, item);
+      // Create a unique key based on name and price
+      const key = `${item.name}-${item.price}`;
+      if (!uniqueMap.has(key)) {
+        uniqueMap.set(key, item);
       }
     });
 
-    return Array.from(uniqueItems.values()).map((item: any) => ({
-      id: crypto.randomUUID(),
-      name: item.name,
-      price: item.price,
-      date: item.date || new Date().toISOString().split('T')[0],
-      type: type,
-      originalText: item.name
+    return Array.from(uniqueMap.values()).map(item => ({
+       id: crypto.randomUUID(),
+       name: item.name,
+       price: item.price,
+       date: item.date,
+       type: type,
+       originalText: item.name
     }));
 
   } catch (error) {
-    console.error("Gemini Image Analysis Error:", error);
+    console.error("Gemini Analysis Error:", error);
     throw error;
   }
 };
 
-export const analyzeTradePerformance = async (transactions: Transaction[], stats: TradeStats): Promise<string> => {
-  try {
-    const recentSold = transactions.filter(t => t.isSold).slice(0, 15);
-    const recentInventory = transactions.filter(t => !t.isSold).slice(0, 5);
-    
-    const dataSummary = {
-      overview: stats,
-      recentCompletedTrades: recentSold.map(t => ({
-        item: t.name,
-        buy: t.buyPrice,
-        sell: t.sellPrice,
-        profit: t.sellPrice - t.buyPrice,
-        margin: ((t.sellPrice - t.buyPrice) / t.buyPrice * 100).toFixed(1) + '%'
-      })),
-      unsoldInventorySample: recentInventory.map(t => ({
-        item: t.name,
-        cost: t.buyPrice
-      }))
-    };
-
-    const prompt = `
-      As a professional second-hand trading financial advisor, analyze the following trading data JSON.
-      
-      Data: ${JSON.stringify(dataSummary)}
-
-      Please provide a concise analysis in Chinese (中文) covering:
-      1. Overall Profitability: Are they making money? What is the ROI?
-      2. Strategy Check: Which items had the best/worst margins?
-      3. Inventory Health: Warning about unsold items if any.
-      4. Actionable Advice: One specific tip to improve profit based on this data.
-
-      Keep the tone professional yet encouraging. Use emojis for readability. Limit response to 200 words.
-    `;
-
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt,
-      config: {
-        thinkingConfig: { thinkingBudget: 0 }
+export const extractItemDetails = async (text: string): Promise<{name?: string, category?: string, buyPrice?: number}> => {
+  const response = await ai.models.generateContent({
+    model: "gemini-2.5-flash",
+    contents: `Extract item details from this text: "${text}". 
+    Return JSON with: name (string), category (one of: Electronics, Clothing, Household, Books, Toys, Other), buyPrice (number). 
+    If price is missing, use 0.`,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          name: { type: Type.STRING },
+          category: { type: Type.STRING },
+          buyPrice: { type: Type.NUMBER },
+        }
       }
-    });
+    }
+  });
 
-    return response.text || "无法生成分析，请稍后再试。";
-
-  } catch (error) {
-    console.error("Gemini Analysis Error:", error);
-    return "AI 分析服务暂时不可用，请检查网络或 API Key 设置。";
+  try {
+    return JSON.parse(response.text || '{}');
+  } catch (e) {
+    return {};
   }
 };
 
-export const extractItemDetails = async (input: string): Promise<{ name: string; category: string; buyPrice?: number }> => {
+export const batchSmartCategorize = async (itemNames: string[]): Promise<Record<string, string>> => {
+  if (itemNames.length === 0) return {};
+
   try {
     const prompt = `
-      Extract transaction details from the following text (which might be a product title, a description, or a mixed link string).
+      You are an expert e-commerce product classifier.
+      Analyze the following product names and categorize them into ONE of the specific tags below.
       
-      Text: "${input}"
-
-      Identify:
-      1. Name: A concise product name (remove words like 'Selling', 'Used', 'Brand New' unless part of the name).
-      2. Category: Must be exactly one of these: 'Electronics', 'Clothing', 'Household', 'Books', 'Toys', 'Other'.
-      3. BuyPrice: If a price is mentioned as original cost/bought for, extract it. If multiple prices appear, try to guess the original buying price. If unsure, return 0 or null.
-
-      Return ONLY JSON.
-    `;
-
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            name: { type: Type.STRING },
-            category: { type: Type.STRING, enum: ['Electronics', 'Clothing', 'Household', 'Books', 'Toys', 'Other'] },
-            buyPrice: { type: Type.NUMBER, description: "Optional detected price" },
-          },
-          required: ["name", "category"],
-        },
-      },
-    });
-
-    const text = response.text;
-    if (!text) return { name: '', category: 'Other' };
-    
-    return JSON.parse(text);
-
-  } catch (error) {
-    console.error("Gemini Extraction Error:", error);
-    return { name: '', category: 'Other' };
-  }
-};
-
-export const findSmartMatches = async (bought: ImportItem[], sold: ImportItem[]): Promise<MatchedPair[]> => {
-  try {
-    const prompt = `
-      I have two lists of second-hand items: one list of items I BOUGHT, and one list of items I SOLD.
-      Please identify which "Sold" item corresponds to which "Bought" item based on their names and context.
+      Classification Standard:
       
-      BOUGHT List: ${JSON.stringify(bought.map(i => ({ id: i.id, name: i.name, price: i.price })))}
-      SOLD List: ${JSON.stringify(sold.map(i => ({ id: i.id, name: i.name, price: i.price })))}
-
-      Rules:
-      1. Match items that are likely the same physical object (e.g. "iPhone 13" bought and "iPhone 13" sold).
-      2. Ignore price differences (I might sell for more or less).
-      3. Return a JSON array of pairs.
-
-      Output JSON Schema:
-      [
-        { "buyId": "id_from_bought_list", "sellId": "id_from_sold_list", "confidence": 0.9, "reason": "Name match" }
-      ]
+      1. 数码与家电
+         - '主机设备': 手机、电脑（台式/笔记本）、平板、游戏机
+         - '外设配件': 键盘、鼠标、数据线、充电头、硬盘/U盘、转接器、显卡、主板、内存
+         - '影音摄影': 耳机、音箱、相机、镜头、支架
+         - '生活家电': 冰箱、洗衣机、空调、吹风机、扫地机
+      
+      2. 家具与家装
+         - '大型家具': 床、床垫、衣柜、沙发、桌子
+         - '办公家具': 人体工学椅、书柜、置物架
+         - '家纺布艺': 被褥、枕头、四件套、窗帘、地毯
+         - '照明灯饰': 吸顶灯、台灯、落地灯
+      
+      3. 服饰与穿搭
+         - '服饰': 上装、下装、外套、内衣、袜子
+         - '鞋靴箱包': 运动鞋、皮鞋、拖鞋、双肩包、行李箱
+         - '配饰': 手表、眼镜、皮带、首饰
+      
+      4. 厨房与饮食
+         - '厨房用具': 锅具、餐具、水杯
+         - '厨房小电': 电饭煲、微波炉、空气炸锅
+         - '食品': 粮油、零食、饮料
+      
+      5. 卫浴与日化
+         - '个人护理': 洗护用品、牙刷、剃须刀
+         - '清洁用品': 洗衣液、纸品、清洁工具
+      
+      6. 文具与书籍
+         - '书籍': 实体书、杂志
+         - '办公文具': 笔、本子、文件夹
+      
+      7. 证件与重要资产
+         - '重要资产': 证件、合同、贵金属、现金
+      
+      8. 兴趣与运动
+         - '运动器材': 瑜伽垫、哑铃、球拍
+         - '户外装备': 帐篷、登山杖
+         - '收藏玩乐': 手办、模型、乐器、桌游
+      
+      9. 医药与急救
+         - '医药急救': 药品、创可贴、口罩
+      
+      10. 虚拟/卡券
+         - '虚拟/卡券': 会员、充值、兑换码、教程、服务
+      
+      Input Items:
+      ${JSON.stringify(itemNames)}
+      
+      Return a JSON ARRAY of objects, where each object has 'name' and 'tag' (The specific sub-category name, e.g., '主机设备' or '外设配件').
     `;
 
     const response = await ai.models.generateContent({
@@ -376,22 +334,95 @@ export const findSmartMatches = async (bought: ImportItem[], sold: ImportItem[])
           items: {
             type: Type.OBJECT,
             properties: {
-              buyId: { type: Type.STRING },
-              sellId: { type: Type.STRING },
-              confidence: { type: Type.NUMBER },
-              reason: { type: Type.STRING },
+              name: { type: Type.STRING },
+              tag: { type: Type.STRING }
             },
-            required: ["buyId", "sellId", "confidence"],
-          },
-        },
-      },
+            required: ["name", "tag"]
+          }
+        }
+      }
+    });
+
+    const resultList = JSON.parse(response.text || '[]');
+    
+    // Convert Array back to Map
+    const map: Record<string, string> = {};
+    resultList.forEach((item: any) => {
+        if (item.name && item.tag) {
+            map[item.name] = item.tag;
+        }
     });
     
-    const text = response.text;
-    return text ? JSON.parse(text) : [];
+    return map;
 
-  } catch (error) {
-    console.error("Gemini Matching Error:", error);
-    return [];
+  } catch (e) {
+    console.error("Smart categorize failed", e);
+    return {};
   }
+};
+
+export const analyzeTradePerformance = async (transactions: Transaction[], stats: TradeStats): Promise<string> => {
+    
+    // Filter for meaningful analysis
+    // 1. Only Closed Loop for Profitability
+    const closedLoop = transactions.filter(t => t.buyPrice > 0 && t.sellPrice > 0);
+    
+    // 2. High Value Inventory (> 5 yuan)
+    const inventory = transactions.filter(t => t.buyPrice > 5 && t.sellPrice === 0);
+
+    // Calculate Best/Worst
+    let bestTrade = null;
+    let worstTrade = null;
+    
+    const processedClosedLoop = closedLoop.map(t => {
+        const shipping = t.shippingCost || 0;
+        const fee = (t.sellPrice + shipping) * 0.006;
+        const profit = t.sellPrice - t.buyPrice - shipping - fee;
+        return { ...t, profit };
+    }).sort((a,b) => b.profit - a.profit);
+
+    if (processedClosedLoop.length > 0) {
+        bestTrade = processedClosedLoop[0];
+        worstTrade = processedClosedLoop[processedClosedLoop.length - 1];
+    }
+
+    const summaryData = {
+        closedLoopStats: {
+            profit: stats.closedLoopProfit,
+            cost: stats.totalInvested, // This might be total, ideally should be closedLoopCost
+            roi: stats.closedLoopRoi,
+            count: stats.closedLoopCount
+        },
+        bestTrade: bestTrade ? { name: bestTrade.name, profit: bestTrade.profit } : null,
+        worstTrade: worstTrade ? { name: worstTrade.name, profit: worstTrade.profit } : null,
+        inventoryCount: inventory.length,
+        inventorySample: inventory.slice(0, 10).map(t => t.name)
+    };
+
+    const prompt = `
+      Act as a professional financial analyst for a second-hand trader.
+      Write a performance report in **Simplified Chinese**.
+      
+      Data:
+      ${JSON.stringify(summaryData)}
+      
+      Format Requirements (Use HTML Tags):
+      1. Use <h2> with Emojis for section headers (e.g., 📊 经营概览, 🏆 最佳交易).
+      2. Use <blockquote> for the Executive Summary at the top.
+      3. Use <code> tags for ALL monetary values (e.g., <code>¥450.00</code>) and percentages (<code>12.5%</code>) to make them look like badges.
+      4. Use <ul><li> for lists.
+      5. Structure:
+         - **Executive Summary**: Focus strictly on "Closed Loop" (Completed) trades. Start with "Congratulations! 🎉" if profitable.
+         - **Highlights**: Best trade (Highest Profit) and Worst trade (Lowest/Negative Profit).
+         - **Inventory Analysis**: Analyze the high-value inventory items provided. Give specific advice based on the item types (e.g. "Keyboards move slow", "Phones drop value fast").
+      
+      Tone: Professional, encouraging, and data-driven.
+    `;
+
+    const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: prompt
+    });
+
+    return response.text || "<h4>Analysis Failed</h4>";
 };

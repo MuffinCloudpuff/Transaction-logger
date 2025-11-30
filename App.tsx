@@ -6,7 +6,7 @@ import { TransactionList } from './components/TransactionList';
 import { TransactionForm } from './components/TransactionForm';
 import { FinancialCharts } from './components/FinancialCharts';
 import { MatchView } from './components/MatchView';
-import { analyzeTradePerformance, analyzeTradeScreenshots } from './services/geminiService';
+import { analyzeTradePerformance, analyzeTradeScreenshots, batchSmartCategorize } from './services/geminiService';
 import { Plus, BrainCircuit, PieChart as ChartIcon, List, Link as LinkIcon, Loader2, CheckCircle2, Package, ShoppingBag, Download, Upload, Layers, X, FileJson, AlertTriangle } from 'lucide-react';
 
 const App: React.FC = () => {
@@ -105,12 +105,33 @@ const App: React.FC = () => {
 
   // --- Handlers ---
   const handleSave = (transaction: Transaction) => {
+    // 1. Optimistic Update (Immediate UI response)
     if (editingTransaction) {
       setTransactions(prev => prev.map(t => t.id === transaction.id ? transaction : t));
     } else {
       setTransactions(prev => [transaction, ...prev]);
     }
     setEditingTransaction(null);
+
+    // 2. Background AI Auto-Tagging
+    // Trigger if:
+    // a) It's a new item (no smartType)
+    // b) The name changed significantly
+    const needsTagging = !transaction.smartType || (editingTransaction && editingTransaction.name !== transaction.name);
+    
+    if (needsTagging && transaction.name.trim()) {
+        console.log(`Triggering auto-tag for: ${transaction.name}`);
+        batchSmartCategorize([transaction.name])
+            .then(categoryMap => {
+                const newTag = categoryMap[transaction.name];
+                if (newTag) {
+                    setTransactions(prev => prev.map(t => 
+                        t.id === transaction.id ? { ...t, smartType: newTag } : t
+                    ));
+                }
+            })
+            .catch(err => console.error("Auto-tagging failed silently", err));
+    }
   };
 
   const handleDirectFileUpload = async (files: File[], type: 'BUY' | 'SELL') => {
@@ -141,6 +162,39 @@ const App: React.FC = () => {
     }
   };
 
+  const handleSmartCategorize = async () => {
+    setIsProcessingImport(true);
+    try {
+      // Find items that don't have a smartType yet
+      const itemsToTag = transactions.filter(t => !t.smartType);
+      
+      if (itemsToTag.length === 0) {
+        alert("所有物品都已分类完毕！");
+        return;
+      }
+      
+      // Batch them (Gemini can handle decent sized lists)
+      const names = itemsToTag.map(t => t.name);
+      
+      // Call Service
+      const categoryMap = await batchSmartCategorize(names);
+      
+      // Update State
+      setTransactions(prev => prev.map(t => {
+        if (categoryMap[t.name]) {
+          return { ...t, smartType: categoryMap[t.name] };
+        }
+        return t;
+      }));
+      
+    } catch (e) {
+      console.error(e);
+      alert("AI分类失败，请重试");
+    } finally {
+      setIsProcessingImport(false);
+    }
+  };
+
   const handleMerge = (buyId: string, sellId: string) => {
     setTransactions(prev => {
       const buyItem = prev.find(t => t.id === buyId);
@@ -157,7 +211,8 @@ const App: React.FC = () => {
         notes: (buyItem.notes || '') + ` | Sold Match: ${sellItem.name}`,
         // Inherit shipping info from the sales record, or default to STO 5.6 if missing
         shippingCost: sellItem.shippingCost !== undefined ? sellItem.shippingCost : 5.6,
-        shippingMethod: sellItem.shippingMethod || 'STO'
+        shippingMethod: sellItem.shippingMethod || 'STO',
+        smartType: buyItem.smartType || sellItem.smartType // Preserve smart tag if available
       };
 
       // Remove the orphaned Sell Item and update the Buy Item
@@ -230,7 +285,8 @@ const App: React.FC = () => {
              sellDate: undefined,
              notes: buyNotes,
              shippingCost: 0, // Reset shipping on inventory
-             shippingMethod: undefined
+             shippingMethod: undefined,
+             smartType: itemToDelete.smartType
            };
 
            // 2. Restore Sell Record (Orphan) -> New ID, Recovered Name, BuyPrice 0
@@ -245,7 +301,8 @@ const App: React.FC = () => {
              sellDate: itemToDelete.sellDate,
              notes: `Unmerged from ${originalBuyName}`,
              shippingCost: itemToDelete.shippingCost,
-             shippingMethod: itemToDelete.shippingMethod
+             shippingMethod: itemToDelete.shippingMethod,
+             smartType: itemToDelete.smartType // Copy tag to sell item too
            };
 
            // Replace the merged item with the restored Buy item, and append the restored Sell item
@@ -355,7 +412,8 @@ const App: React.FC = () => {
                  sellDate: item.sellDate || (item.isSold ? item.date : undefined),
                  notes: item.notes,
                  shippingCost: isNaN(shippingCost) ? 0 : shippingCost,
-                 shippingMethod: shippingMethod
+                 shippingMethod: shippingMethod,
+                 smartType: item.smartType
              };
 
              // Count derived status
@@ -461,6 +519,7 @@ const App: React.FC = () => {
             transactions={transactions} 
             onMerge={handleMerge} 
             onUpload={handleDirectFileUpload}
+            onAutoTag={handleSmartCategorize}
             isProcessing={isProcessingImport}
           />
         ) : viewMode === 'CHARTS' ? (
@@ -493,10 +552,11 @@ const App: React.FC = () => {
                 </div>
                 
                 {aiAnalysis ? (
-                  <div className="bg-gradient-to-br from-white to-purple-50 p-6 rounded-xl border border-purple-100 shadow-sm animate-fade-in">
-                    <div className="prose prose-purple max-w-none text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">
-                      {aiAnalysis}
-                    </div>
+                  <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm animate-fade-in">
+                    <article 
+                      className="prose prose-indigo max-w-none prose-h2:text-lg prose-h2:font-bold prose-h2:text-gray-800 prose-blockquote:bg-gray-50 prose-blockquote:border-l-4 prose-blockquote:border-indigo-400 prose-blockquote:px-4 prose-blockquote:py-2 prose-blockquote:not-italic prose-blockquote:text-gray-600 prose-code:bg-gray-100 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-indigo-700 prose-code:font-mono prose-code:text-sm prose-li:text-sm prose-li:text-gray-600 text-sm"
+                      dangerouslySetInnerHTML={{ __html: aiAnalysis }} 
+                    />
                   </div>
                 ) : (
                   <div className="text-center py-10 bg-white rounded-xl border border-gray-100 border-dashed text-gray-400 text-sm">

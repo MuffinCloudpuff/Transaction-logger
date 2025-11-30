@@ -102,7 +102,8 @@ export const TransactionForm: React.FC<TransactionFormProps> = ({ isOpen, onClos
       date,
       sellDate: isSold ? (sellDate || new Date().toISOString().split('T')[0]) : undefined,
       shippingCost: isSold ? (parseFloat(shippingCost) || 0) : undefined,
-      shippingMethod: isSold ? shippingMethod : undefined
+      shippingMethod: isSold ? shippingMethod : undefined,
+      smartType: initialData?.smartType // Preserve existing AI tag if editing
     };
     onSave(newTransaction);
     onClose();
