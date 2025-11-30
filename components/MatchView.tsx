@@ -350,7 +350,7 @@ export const MatchView: React.FC<MatchViewProps> = ({ transactions, onMerge, onU
 
                     <div className="flex justify-between items-start mb-1">
                       <div className="flex-1">
-                        <div className="font-medium text-gray-800 text-sm line-clamp-2">{item.name}</div>
+                        <div className="font-medium text-gray-800 text-sm line-clamp-2 transition-colors group-hover:text-gray-900 group-hover:font-bold">{item.name}</div>
                         <div className="flex flex-wrap items-center gap-1 mt-1">
                              {aiTag && (
                                <span className={`text-[10px] px-1.5 py-0.5 rounded border border-transparent font-medium uppercase tracking-wide flex items-center gap-1 ${TAG_COLORS[aiTag] || TAG_COLORS.default}`}>
@@ -364,7 +364,7 @@ export const MatchView: React.FC<MatchViewProps> = ({ transactions, onMerge, onU
                              )}
                           </div>
                       </div>
-                      <span className="font-mono font-semibold text-green-600 ml-2 text-sm whitespace-nowrap">
+                      <span className="font-mono font-semibold text-green-600 ml-2 text-sm whitespace-nowrap group-hover:text-green-700 group-hover:font-bold transition-all">
                         +¥{item.sellPrice}
                       </span>
                     </div>
@@ -373,8 +373,8 @@ export const MatchView: React.FC<MatchViewProps> = ({ transactions, onMerge, onU
                     </div>
 
                     {selectedBuyId && (
-                       <div className="absolute inset-0 flex items-center justify-center bg-green-100/90 backdrop-blur-[1px] opacity-0 group-hover:opacity-100 transition-opacity rounded-lg z-20">
-                          <span className="font-bold text-green-800 flex items-center gap-2 shadow-sm bg-white px-3 py-1.5 rounded-full text-xs">
+                       <div className="absolute inset-0 flex items-center justify-center bg-green-100/20 backdrop-blur-none opacity-0 group-hover:opacity-100 transition-opacity rounded-lg z-20">
+                          <span className="font-bold text-green-700 flex items-center gap-2 shadow-sm bg-white/95 px-3 py-1.5 rounded-full text-xs ring-1 ring-green-200">
                             <LinkIcon size={14} /> 确认合并
                           </span>
                        </div>
