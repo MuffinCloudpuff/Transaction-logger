@@ -96,6 +96,7 @@ export const TransactionList: React.FC<TransactionListProps> = ({ transactions, 
               
               const margin = t.buyPrice > 0 ? (profit / t.buyPrice) * 100 : 0;
               const isProfit = profit >= 0;
+              const isClosedLoop = t.buyPrice > 0 && t.sellPrice > 0 && t.isSold;
 
               return (
                 <tr key={t.id} className="hover:bg-gray-50 transition-colors group">
@@ -272,6 +273,7 @@ export const TransactionList: React.FC<TransactionListProps> = ({ transactions, 
                   <td className="px-6 py-4 text-center">
                     <div className="flex justify-center space-x-3">
                       <button 
+                        type="button"
                         onClick={(e) => { e.stopPropagation(); onEdit(t); }} 
                         className="text-indigo-600 hover:text-indigo-800 p-1" 
                         title="编辑详情"
@@ -279,9 +281,13 @@ export const TransactionList: React.FC<TransactionListProps> = ({ transactions, 
                         <Edit2 size={18} />
                       </button>
                       <button 
-                        onClick={(e) => { e.stopPropagation(); onDelete(t.id); }} 
+                        type="button"
+                        onClick={(e) => { 
+                          e.stopPropagation(); 
+                          onDelete(t.id); 
+                        }} 
                         className="text-gray-400 hover:text-red-500 p-1" 
-                        title="删除记录"
+                        title={isClosedLoop ? "拆分交易 (还原为买入/卖出)" : "永久删除 (UI将不再显示)"}
                       >
                         <Trash2 size={18} />
                       </button>

@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Transaction, TradeStats, FilterType } from './types';
 import { SummaryCards } from './components/SummaryCards';
@@ -7,7 +6,7 @@ import { TransactionForm } from './components/TransactionForm';
 import { FinancialCharts } from './components/FinancialCharts';
 import { MatchView } from './components/MatchView';
 import { analyzeTradePerformance, analyzeTradeScreenshots, batchSmartCategorize } from './services/geminiService';
-import { Plus, BrainCircuit, PieChart as ChartIcon, List, Link as LinkIcon, Loader2, CheckCircle2, Package, ShoppingBag, Download, Upload, Layers, X, FileJson, AlertTriangle } from 'lucide-react';
+import { Plus, BrainCircuit, PieChart as ChartIcon, List, Link as LinkIcon, Loader2, CheckCircle2, Package, ShoppingBag, Download, Upload, Layers, X, FileJson, AlertTriangle, FileUp, Trash2, Split } from 'lucide-react';
 
 const App: React.FC = () => {
   // --- State ---
@@ -24,9 +23,13 @@ const App: React.FC = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   
+  // Delete Confirmation State
+  const [deleteConfirm, setDeleteConfirm] = useState<{ id: string, type: 'SPLIT' | 'DELETE', title: string } | null>(null);
+
   // Import Modal State
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [importText, setImportText] = useState('');
+  const [overrideConfirm, setOverrideConfirm] = useState(false);
   
   // Default to Closed Loop (Matched) as requested
   const [filter, setFilter] = useState<FilterType>(FilterType.CLOSED_LOOP);
@@ -114,9 +117,6 @@ const App: React.FC = () => {
     setEditingTransaction(null);
 
     // 2. Background AI Auto-Tagging
-    // Trigger if:
-    // a) It's a new item (no smartType)
-    // b) The name changed significantly
     const needsTagging = !transaction.smartType || (editingTransaction && editingTransaction.name !== transaction.name);
     
     if (needsTagging && transaction.name.trim()) {
@@ -248,19 +248,33 @@ const App: React.FC = () => {
     }));
   };
 
-  const handleDelete = (id: string) => {
+  // Step 1: Trigger confirmation modal
+  const handleDeleteRequest = (id: string) => {
     const itemToDelete = transactions.find(t => t.id === id);
     if (!itemToDelete) return;
 
     // Determine Type
     const isClosedLoop = itemToDelete.buyPrice > 0 && itemToDelete.sellPrice > 0 && itemToDelete.isSold;
+    
+    setDeleteConfirm({
+        id: id,
+        type: isClosedLoop ? 'SPLIT' : 'DELETE',
+        title: itemToDelete.name
+    });
+  };
 
-    if (isClosedLoop) {
-       // --- SMART UNMERGE LOGIC ---
-       if (window.confirm("这是一个已匹配的闭环交易（买入+卖出）。\n\n点击【确定】将解除匹配：\n1. 恢复为一条【购买记录】（库存）\n2. 恢复为一条【出售记录】\n\n此操作不会丢失数据。")) {
+  // Step 2: Execute action after confirmation
+  const executeDelete = () => {
+    if (!deleteConfirm) return;
+
+    const { id, type } = deleteConfirm;
+
+    if (type === 'SPLIT') {
          setTransactions(prev => {
+           const itemToDelete = prev.find(t => t.id === id);
+           if (!itemToDelete) return prev;
+
            // Try to recover original names from notes
-           // Expected Format: "Original Buy Name | Sold Match: Original Sell Name"
            const notes = itemToDelete.notes || '';
            const matchSeparator = ' | Sold Match: ';
            
@@ -279,19 +293,22 @@ const App: React.FC = () => {
            // 1. Restore Buy Record (Inventory) -> Keep ID, Name, BuyPrice, Reset SellPrice
            const restoredBuy: Transaction = {
              ...itemToDelete,
-             name: originalBuyName, // Should match what it was before merge
+             name: originalBuyName, 
              sellPrice: 0,
              isSold: false,
              sellDate: undefined,
              notes: buyNotes,
-             shippingCost: 0, // Reset shipping on inventory
+             shippingCost: undefined, // Reset shipping on inventory
              shippingMethod: undefined,
              smartType: itemToDelete.smartType
            };
 
+           // Generate ID safely
+           const newSellId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).substr(2);
+
            // 2. Restore Sell Record (Orphan) -> New ID, Recovered Name, BuyPrice 0
            const restoredSell: Transaction = {
-             id: crypto.randomUUID(), // Must be new ID
+             id: newSellId,
              name: originalSellName,
              category: itemToDelete.category,
              buyPrice: 0,
@@ -302,21 +319,17 @@ const App: React.FC = () => {
              notes: `Unmerged from ${originalBuyName}`,
              shippingCost: itemToDelete.shippingCost,
              shippingMethod: itemToDelete.shippingMethod,
-             smartType: itemToDelete.smartType // Copy tag to sell item too
+             smartType: itemToDelete.smartType 
            };
 
-           // Replace the merged item with the restored Buy item, and append the restored Sell item
-           return [...prev.map(t => t.id === id ? restoredBuy : t), restoredSell];
+           return [restoredSell, ...prev.map(t => t.id === id ? restoredBuy : t)];
          });
-       }
     } else {
-      // --- STANDARD PERMANENT DELETE ---
-      // For Inventory or Orphan Sales, we just delete them.
-      const label = itemToDelete.buyPrice > 0 ? "购买记录" : "出售记录";
-      if (window.confirm(`确定要彻底删除这条【${label}】吗？\n\n删除后无法恢复。`)) {
+        // PERMANENT DELETE
         setTransactions(prev => prev.filter(t => t.id !== id));
-      }
     }
+    
+    setDeleteConfirm(null);
   };
 
   const handleEdit = (transaction: Transaction) => {
@@ -348,13 +361,25 @@ const App: React.FC = () => {
     URL.revokeObjectURL(url);
   };
 
+  const handleJsonFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+     const file = e.target.files?.[0];
+     if (!file) return;
+
+     const reader = new FileReader();
+     reader.onload = (event) => {
+       const content = event.target?.result as string;
+       if (content) {
+         setImportText(content);
+       }
+     };
+     reader.readAsText(file);
+  };
+
   // --- Paste Import Logic ---
   const parseAndImport = (jsonStr: string, mode: 'MERGE' | 'REPLACE') => {
     try {
         if (!jsonStr || !jsonStr.trim()) throw new Error("内容为空");
 
-        // --- Improved Regex Parsing ---
-        // Greedy match from first [ to last ] to strip headers/footers
         const jsonRegex = /\[[\s\S]*\]/;
         const match = jsonStr.match(jsonRegex);
         
@@ -367,7 +392,6 @@ const App: React.FC = () => {
            }
         }
         
-        // Fallback: Try parsing the whole string if regex failed
         if (!parsedData) {
            try {
               parsedData = JSON.parse(jsonStr);
@@ -377,30 +401,25 @@ const App: React.FC = () => {
         }
         
         if (Array.isArray(parsedData)) {
-          // Stats for confirmation
           let closedLoopCount = 0;
           let inventoryCount = 0;
           let orphanCount = 0;
 
           const repairedData: Transaction[] = parsedData.map((item: any) => {
-             // Logic to set default shipping if missing for SOLD items
              let shippingMethod = item.shippingMethod;
              let shippingCost = Number(item.shippingCost);
              
              if (!!item.isSold) {
-                 // Check if shipping method is completely missing (legacy data)
                  if (!shippingMethod) {
                      shippingMethod = 'STO';
                      shippingCost = 5.6;
                  } else if (isNaN(shippingCost)) {
-                     // Method exists but cost is NaN, set defaults based on method or fall back to STO
                      shippingCost = (shippingMethod === 'STO') ? 5.6 : 
                                     (shippingMethod === 'SF') ? 18 :
                                     (shippingMethod === 'JD') ? 15 : 0;
                  }
              }
 
-             // Sanitization
              const t: Transaction = {
                  id: item.id || crypto.randomUUID(),
                  name: item.name || 'Unknown Item',
@@ -416,7 +435,6 @@ const App: React.FC = () => {
                  smartType: item.smartType
              };
 
-             // Count derived status
              if (t.buyPrice > 0 && t.sellPrice > 0) closedLoopCount++;
              else if (t.buyPrice > 0 && t.sellPrice === 0) inventoryCount++;
              else if (t.buyPrice === 0 && t.sellPrice > 0) orphanCount++;
@@ -427,7 +445,6 @@ const App: React.FC = () => {
           if (mode === 'REPLACE') {
             setTransactions(repairedData);
           } else {
-            // MERGE: Filter out IDs that already exist to prevent dupes (or just append all?)
             const existingIds = new Set(transactions.map(t => t.id));
             const newItems = repairedData.filter(t => !existingIds.has(t.id));
             setTransactions(prev => [...prev, ...newItems]);
@@ -526,7 +543,7 @@ const App: React.FC = () => {
            <>
               <FinancialCharts transactions={transactions} />
               
-              {/* AI Analysis Section - Only in Charts View, at the bottom */}
+              {/* AI Analysis Section */}
               <div className="mt-8 border-t border-gray-200 pt-8">
                 <div className="flex items-center justify-between mb-4">
                   <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
@@ -606,7 +623,7 @@ const App: React.FC = () => {
                transactions={filteredTransactions} 
                onEdit={handleEdit} 
                onUpdate={handleQuickUpdate}
-               onDelete={handleDelete} 
+               onDelete={handleDeleteRequest} 
              />
           </>
         )}
@@ -634,6 +651,81 @@ const App: React.FC = () => {
         initialData={editingTransaction}
       />
 
+      {/* DELETE CONFIRMATION MODAL (Custom) */}
+      {deleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm p-4 animate-fade-in">
+           <div className="bg-white rounded-xl shadow-xl w-full max-w-sm overflow-hidden transform transition-all scale-100">
+              <div className="p-6">
+                 <div className={`mx-auto flex items-center justify-center h-12 w-12 rounded-full mb-4 ${deleteConfirm.type === 'SPLIT' ? 'bg-indigo-100 text-indigo-600' : 'bg-red-100 text-red-600'}`}>
+                    {deleteConfirm.type === 'SPLIT' ? <Split size={24} /> : <Trash2 size={24} />}
+                 </div>
+                 <h3 className="text-lg font-bold text-gray-900 text-center mb-2">
+                    {deleteConfirm.type === 'SPLIT' ? '拆分闭环交易' : '确认永久删除'}
+                 </h3>
+                 <p className="text-sm text-gray-500 text-center mb-2 font-medium">
+                    {deleteConfirm.title}
+                 </p>
+                 <p className="text-sm text-gray-500 text-center">
+                    {deleteConfirm.type === 'SPLIT' 
+                       ? '此操作会将该记录还原为“库存(买入)”和“出售”两条独立记录，数据不会丢失。' 
+                       : '删除后无法恢复，该记录将永久消失。'}
+                 </p>
+              </div>
+              <div className="bg-gray-50 px-6 py-4 flex flex-row-reverse gap-3">
+                 <button
+                    type="button"
+                    onClick={executeDelete}
+                    className={`w-full inline-flex justify-center rounded-lg border border-transparent shadow-sm px-4 py-2 text-base font-medium text-white sm:text-sm ${deleteConfirm.type === 'SPLIT' ? 'bg-indigo-600 hover:bg-indigo-700' : 'bg-red-600 hover:bg-red-700'}`}
+                 >
+                    {deleteConfirm.type === 'SPLIT' ? '确认拆分' : '确认删除'}
+                 </button>
+                 <button
+                    type="button"
+                    onClick={() => setDeleteConfirm(null)}
+                    className="mt-0 w-full inline-flex justify-center rounded-lg border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 sm:text-sm"
+                 >
+                    取消
+                 </button>
+              </div>
+           </div>
+        </div>
+      )}
+
+      {/* OVERRIDE CONFIRMATION MODAL (Custom) - z-60 to be above import modal */}
+      {overrideConfirm && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm p-4 animate-fade-in">
+           <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6 transform transition-all scale-100">
+               <div className="flex flex-col items-center text-center">
+                  <div className="bg-red-100 text-red-600 p-3 rounded-full mb-4">
+                     <AlertTriangle size={32} />
+                  </div>
+                  <h3 className="text-lg font-bold text-gray-900 mb-2">确认覆盖所有数据？</h3>
+                  <p className="text-sm text-gray-500 mb-6 leading-relaxed">
+                     此操作将 <span className="text-red-600 font-bold">清空当前所有记录</span>，并完全替换为您输入的新数据。<br/>
+                     该操作无法撤销，建议先导出备份。
+                  </p>
+                  <div className="flex gap-3 w-full">
+                     <button 
+                        onClick={() => setOverrideConfirm(false)}
+                        className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 font-medium hover:bg-gray-50 transition-colors"
+                     >
+                        取消
+                     </button>
+                     <button 
+                        onClick={() => {
+                           parseAndImport(importText, 'REPLACE');
+                           setOverrideConfirm(false);
+                        }}
+                        className="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 shadow-lg shadow-red-200 transition-colors"
+                     >
+                        确认覆盖
+                     </button>
+                  </div>
+               </div>
+           </div>
+        </div>
+      )}
+
       {/* Import JSON Modal */}
       {isImportModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 backdrop-blur-sm p-4 animate-fade-in">
@@ -652,12 +744,31 @@ const App: React.FC = () => {
                  <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 mb-4 text-sm text-yellow-800 flex gap-2">
                     <AlertTriangle className="shrink-0 text-yellow-600" size={18} />
                     <p>
-                       请直接粘贴 <code>.json</code> 文件中的内容到下方。系统会自动过滤掉文件头/尾的多余文本，只读取其中的 <code>[...]</code> 数组部分。
+                       支持直接上传 <code>.json</code> 备份文件，或者粘贴文本内容。
                     </p>
                  </div>
 
+                 <div className="mb-4">
+                    <label className="flex flex-col items-center justify-center w-full h-24 border-2 border-gray-300 border-dashed rounded-xl cursor-pointer bg-gray-50 hover:bg-gray-100 transition-colors">
+                        <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                            <FileUp className="w-8 h-8 text-gray-400 mb-2" />
+                            <p className="text-sm text-gray-500"><span className="font-semibold">点击上传文件</span></p>
+                        </div>
+                        <input type="file" className="hidden" accept=".json" onChange={handleJsonFileUpload} />
+                    </label>
+                 </div>
+
+                 <div className="relative">
+                     <div className="absolute inset-0 flex items-center">
+                        <div className="w-full border-t border-gray-200"></div>
+                     </div>
+                     <div className="relative flex justify-center text-sm">
+                        <span className="px-2 bg-white text-gray-500">或 粘贴文本</span>
+                     </div>
+                 </div>
+
                  <textarea
-                    className="w-full h-64 p-4 border border-gray-300 rounded-xl font-mono text-xs text-gray-600 bg-gray-50 focus:ring-2 focus:ring-indigo-500 focus:bg-white outline-none resize-none"
+                    className="mt-4 w-full h-32 p-4 border border-gray-300 rounded-xl font-mono text-xs text-gray-600 bg-gray-50 focus:ring-2 focus:ring-indigo-500 focus:bg-white outline-none resize-none"
                     placeholder={`[\n  {\n    "name": "示例物品",\n    "buyPrice": 100,\n    ...\n  }\n]`}
                     value={importText}
                     onChange={(e) => setImportText(e.target.value)}
@@ -673,11 +784,7 @@ const App: React.FC = () => {
                     合并 (保留现有)
                  </button>
                  <button 
-                    onClick={() => {
-                        if(window.confirm("确定要覆盖当前所有数据吗？此操作不可撤销。")) {
-                            parseAndImport(importText, 'REPLACE');
-                        }
-                    }}
+                    onClick={() => setOverrideConfirm(true)}
                     disabled={!importText}
                     className="px-4 py-2 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-colors shadow-lg shadow-indigo-200"
                  >
